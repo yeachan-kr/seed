@@ -1,0 +1,172 @@
+import re
+import os
+import sys
+import csv
+import torch
+import numpy as np
+
+sys.path.append(os.getcwd())
+from util.functions import normalize
+
+def remove_zero_len_tokens(X, y, tokenizer, task_name):
+    new_X, new_y = [], []
+    for sent, labels in zip(X, y):
+        new_sent, new_labels = [], []
+        for token, label in zip(sent, labels):
+            if len(tokenizer.tokenize(token)) == 0:
+                assert task_name == 'matscholar'
+                continue
+            new_sent.append(token)
+            new_labels.append(label)
+        new_X.append(new_sent)
+        new_y.append(new_labels)
+    return new_X, new_y
+
+## Raw 데이터로부터 SOFC Slot 데이터셋 불러오는 함수 ##
+def get_sofc_data_split(split_name, data_dir, doc_info, slotting):
+    assert split_name in ['train', 'dev', 'test']
+    tokens, labels = [], []
+
+    for file in sorted(os.listdir(os.path.join(data_dir, 'texts'))):
+
+        doc_name = file[3:-4]
+        if doc_info[doc_name] != split_name:
+            continue
+
+        text_file = open(os.path.join(data_dir, 'texts', file))
+        text = text_file.read()
+        text_file.close()
+
+        sent_file = open(os.path.join(data_dir, 'annotations', 'sentences', doc_name + '.csv'))
+        sent_ann = sent_file.read()
+        sent_file.close()
+
+        sentence_offsets = dict()
+        for line in sent_ann.split('\n'):
+            l = line.split()
+            if len(l) == 0: continue
+            assert (len(l) == 4)
+            sentence_offsets[int(l[0])] = (int(l[2]), int(l[3]))
+
+        token_file = open(os.path.join(data_dir, 'annotations', 'entity_types_and_slots', doc_name + '.csv'))
+        token_ann = token_file.read()
+        token_file.close()
+
+        prev_sent_id = None
+
+        for line in token_ann.split('\n'):
+            l = line.split()
+            if len(l) == 0: continue
+            assert (len(l) == 6)
+            sent_id = int(l[0])
+            if prev_sent_id is None or sent_id != prev_sent_id:
+                tokens.append([])
+                labels.append([])
+            prev_sent_id = sent_id
+            s = sentence_offsets[sent_id][0] + int(l[2])
+            e = sentence_offsets[sent_id][0] + int(l[3])
+            tokens[-1].append(text[s:e])
+            labels[-1].append(l[5] if slotting else l[4])
+            if slotting and labels[-1][-1][2:] == 'interconnect_material':
+                labels[-1][-1] = 'O'
+    return tokens, labels
+
+## SOFC Slot 데이터셋의 fold를 지정하는 함수 ##
+def modify_cross_val_data_split(doc_info, fold):
+    train_ids = sorted([docid for docid in doc_info if doc_info[docid] in set(['train', 'dev'])])
+    fold -= 1
+    for docid in train_ids:
+        doc_info[docid] = 'train'
+    for i in range(fold, len(train_ids), 5):
+        docid = train_ids[i]
+        doc_info[docid] = 'dev'
+    return doc_info
+
+## SOFC Slot 데이터셋을 불러오는 함수 ##
+def get_sofc_data(slotting, fold):
+    data_dir = 'data/sofc-exp-corpus'
+
+    doc_info = dict()
+    with open(os.path.join(data_dir, 'SOFC-Exp-Metadata.csv'), encoding='utf-8') as csvfile:
+        csvreader = csv.reader(csvfile, delimiter='\t')
+        header = next(csvreader)
+        for row in csvreader:
+            docid = row[header.index('name')]
+            doc_info[docid] = row[header.index('set')]
+            assert (doc_info[docid] in ['train', 'dev', 'test'])
+
+    if fold is not None:
+        assert (1 <= fold <= 5)
+        doc_info = modify_cross_val_data_split(doc_info, fold)
+
+    train_X, train_y = get_sofc_data_split('train', data_dir, doc_info, slotting)
+    val_X, val_y = get_sofc_data_split('dev', data_dir, doc_info, slotting)
+    test_X, test_y = get_sofc_data_split('test', data_dir, doc_info, slotting)
+
+    return train_X, train_y, val_X, val_y, test_X, test_y
+
+
+def parse_file(f_name):
+    f = open(f_name, 'r')
+    data = re.split(r'\n\s*\n', f.read().strip())
+    f.close()
+    tokens, labels = [], []
+    for sent in data:
+        sent_tokens, sent_labels = [], []
+        for line in sent.split('\n'):
+            l = re.split(r' +', line)
+            if len(l) != 2:
+                sent_tokens = []
+                break
+            if len(l[0]) == 0: l[0] = ' '
+            if len(l[1]) == 0: l[1] = 'O'
+            sent_tokens.append(l[0])
+            sent_labels.append(l[1])
+        if len(sent_tokens) > 0:
+            tokens.append(sent_tokens)
+            labels.append(sent_labels)
+    return tokens, labels
+
+## Matscholar 데이터셋을 불러오는 함수 ##
+def get_matscholar_data():
+    data_dir = 'data/NER_MATSCHOLAR'
+    train_X, train_y = parse_file(os.path.join(data_dir, 'train.txt'))
+    val_X, val_y = parse_file(os.path.join(data_dir, 'dev.txt'))
+    test_X, test_y = parse_file(os.path.join(data_dir, 'test.txt'))
+    return train_X, train_y, val_X, val_y, test_X, test_y
+
+## NER 데이터셋을 불러오는 함수 ##
+def get_ner_data(data_name, fold=None, norm=False):
+    data_name = data_name.lower()
+    if data_name == 'sofc':
+        data = get_sofc_data(slotting=False, fold=fold)
+    elif data_name == 'sofc_slot':
+        data = get_sofc_data(slotting=True, fold=fold)
+    elif data_name == 'matscholar':
+        data = get_matscholar_data()
+    else:
+        raise NotImplementedError
+
+    if norm is False:
+        return data
+    norm_data = []
+    for split in data:
+        norm_split = []
+        for s in split:
+            norm_split.append(normalize('\n'.join(s)).split('\n'))
+        norm_data.append(norm_split)
+    return norm_data
+
+## NER 데이터셋의 label을 토큰별로 태깅하는 함수 ##
+def encode_tags(tag2id, tags, encodings):
+    labels = [[tag2id[tag] for tag in doc] for doc in tags]
+    encoded_labels = []
+    for doc_labels, doc_offset in zip(labels, encodings.offset_mapping):
+        doc_enc_labels = np.ones(len(doc_offset), dtype=int) * -100
+        arr_offset = np.array(doc_offset)
+        true_idx = ((arr_offset[:, 0] == 0) & (arr_offset[:, 1] != 0))
+
+        doc_enc_labels[true_idx] = doc_labels
+        encoded_labels.append(doc_enc_labels.tolist())
+
+    return encoded_labels
