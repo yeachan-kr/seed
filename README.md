@@ -1,4 +1,4 @@
-# Code for SEED paper
+# Code for SEED
 
 ## How to run 
 
