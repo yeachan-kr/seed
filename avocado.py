@@ -13,7 +13,7 @@ if __name__ == "__main__":
 
     args = CorpusArgument()
 
-    domain_tokenizer = CustomTokenizer(args) # 추가할 Vocabulary 후보군을 생성하는 클래스
+    domain_tokenizer = CustomTokenizer(args)
 
     pretrained_tokenizer = AutoTokenizer.from_pretrained(args.encoder_class)
     pretrained_tokenizer.save_pretrained(args.vocab_path)
@@ -27,9 +27,9 @@ if __name__ == "__main__":
 
     unique_words = list(new_string.strip().replace("\n", " ").split(" "))
 
-    learner = Learner(args, pretrained_config, pretrained_tokenizer, domain_tokenizer.encoder, ) # Vocabulary 확장을 수행하는 클래스
+    learner = Learner(args, pretrained_config, pretrained_tokenizer, domain_tokenizer.encoder, ) 
     added_vocab = learner.update_tokenizer(unique_words, 50)
     # print('add', added_vocab, len(added_vocab))
     # exit()
 
-    d2p = domain2pretrain(added_vocab, pretrained_tokenizer, vocab_path=args.vocab_path) # Embedding 초기화를 위한 함수
+    d2p = domain2pretrain(added_vocab, pretrained_tokenizer, vocab_path=args.vocab_path) 
